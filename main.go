@@ -76,8 +76,6 @@ func main() {
 
 		// ready to execute?
 		if strings.ToUpper(strings.TrimSpace(line)) == "GO" {
-			_, _ = os.Stdout.WriteString("\n")
-
 			// start a CSV writer:
 			cw := csv.NewWriter(os.Stdout)
 
@@ -102,9 +100,6 @@ func main() {
 				} else {
 					_, _ = fmt.Fprintln(os.Stderr, err)
 				}
-			} else {
-				// report row count:
-				_, _ = fmt.Fprintf(os.Stderr, "%d row(s) queried\n", q.rowCount)
 			}
 
 			// prepare for next query:
@@ -122,12 +117,15 @@ func main() {
 	}
 }
 
+type csvWriter interface {
+	Write(record []string) error
+}
+
 type queryCSV struct {
 	c            *sql.DB
-	cw           *csv.Writer
+	cw           csvWriter
 	nullString   string
 	queryTimeout time.Duration
-	rowCount     int
 }
 
 func (q *queryCSV) execQuery(text string) (err error) {
@@ -149,28 +147,52 @@ func (q *queryCSV) execQuery(text string) (err error) {
 		return fmt.Errorf("error executing query: %w", err)
 	}
 
+nextResultSet:
+	// separate result sets from each other (and from query) with empty lines:
+	q.cw.Write(nil)
+
 	var colTypes []*sql.ColumnType
 	if colTypes, err = rows.ColumnTypes(); err != nil {
 		return fmt.Errorf("error fetching column schema: %w", err)
 	}
 
+	if len(colTypes) > 0 {
+		if err = q.writeResultSet(colTypes, rows); err != nil {
+			return
+		}
+	}
+
+	if rows.NextResultSet() {
+		goto nextResultSet
+	}
+
+	if err = rows.Close(); err != nil {
+		return fmt.Errorf("error closing result set: %w", err)
+	}
+
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("error from result set: %w", err)
+	}
+
+	return
+}
+
+func (q *queryCSV) writeResultSet(colTypes []*sql.ColumnType, rows *sql.Rows) (err error) {
 	// write the CSV header:
 	colNames := q.writeHeader(colTypes)
 	if err = q.cw.Write(colNames); err != nil {
 		return fmt.Errorf("error writing CSV column header: %w", err)
 	}
 
-	cw := q.cw
-
 	formatted := make([]string, len(colTypes))
 	rowValues := make([]any, len(colTypes))
-	for q.rowCount = 0; rows.Next(); q.rowCount++ {
+	for rowCount := 0; rows.Next(); rowCount++ {
 		// fetch column values:
 		for i := range rowValues {
 			rowValues[i] = new(any)
 		}
 		if err = rows.Scan(rowValues...); err != nil {
-			return fmt.Errorf("error in row %d scanning: %w", q.rowCount+1, err)
+			return fmt.Errorf("error in row %d scanning: %w", rowCount+1, err)
 		}
 
 		// format column values for output to CSV:
@@ -187,7 +209,7 @@ func (q *queryCSV) execQuery(text string) (err error) {
 				var uv uuid.UUID
 				uv, err = uuid.FromBytes(value.([]byte))
 				if err != nil {
-					return fmt.Errorf("error in row %d constructing uuid from bytes: %w", q.rowCount+1, err)
+					return fmt.Errorf("error in row %d constructing uuid from bytes: %w", rowCount+1, err)
 				}
 				formatted[i] = uv.String()
 			case "DECIMAL":
@@ -210,21 +232,9 @@ func (q *queryCSV) execQuery(text string) (err error) {
 		}
 
 		// write the CSV line:
-		if err = cw.Write(formatted); err != nil {
-			return fmt.Errorf("error in row %d writing CSV: %w", q.rowCount+1, err)
+		if err = q.cw.Write(formatted); err != nil {
+			return fmt.Errorf("error in row %d writing CSV: %w", rowCount+1, err)
 		}
-
-		if err = cw.Error(); err != nil {
-			return fmt.Errorf("error in row %d writing CSV: %w", q.rowCount+1, err)
-		}
-	}
-
-	if err = rows.Close(); err != nil {
-		return fmt.Errorf("error closing result set: %w", err)
-	}
-
-	if err = rows.Err(); err != nil {
-		return fmt.Errorf("error from result set: %w", err)
 	}
 
 	return
