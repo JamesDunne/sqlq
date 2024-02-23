@@ -104,6 +104,7 @@ func main() {
 
 			// prepare for next query:
 			text.Reset()
+			_, _ = os.Stdout.WriteString("---\n")
 		} else {
 			// nope; append line to text:
 			text.WriteString(line)
@@ -148,9 +149,6 @@ func (q *queryCSV) execQuery(text string) (err error) {
 	}
 
 nextResultSet:
-	// separate result sets from each other (and from query) with empty lines:
-	q.cw.Write(nil)
-
 	var colTypes []*sql.ColumnType
 	if colTypes, err = rows.ColumnTypes(); err != nil {
 		return fmt.Errorf("error fetching column schema: %w", err)
@@ -163,6 +161,11 @@ nextResultSet:
 	}
 
 	if rows.NextResultSet() {
+		// separate result sets from each other:
+		if err = q.cw.Write(nil); err != nil {
+			return fmt.Errorf("error writing CSV result set separator: %w", err)
+		}
+
 		goto nextResultSet
 	}
 
